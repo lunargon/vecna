@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 type Session struct {
@@ -20,8 +19,8 @@ type Session struct {
 	stderr  io.Reader
 }
 
-func Connect(h Host) (*Session, error) {
-	config, err := buildSSHConfig(h)
+func Connect(h Host, password string, skipKeyIfNotDeployed bool) (*Session, error) {
+	config, err := buildSSHConfig(h, password, skipKeyIfNotDeployed)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +122,7 @@ func (s *Session) Close() error {
 	return nil
 }
 
-func buildSSHConfig(h Host) (*ssh.ClientConfig, error) {
+func buildSSHConfig(h Host, password string, skipKeyIfNotDeployed bool) (*ssh.ClientConfig, error) {
 	home, _ := os.UserHomeDir()
 	expandPath := func(p string) string {
 		if strings.HasPrefix(p, "~") {
@@ -134,14 +133,28 @@ func buildSSHConfig(h Host) (*ssh.ClientConfig, error) {
 
 	var authMethods []ssh.AuthMethod
 
-	if h.IdentityFile != "" {
+	// If key is deployed, prioritize it; otherwise try password first
+	keyAdded := false
+	if h.IdentityFile != "" && !skipKeyIfNotDeployed {
 		keyPath := expandPath(h.IdentityFile)
 		key, err := os.ReadFile(keyPath)
 		if err == nil {
 			signer, err := ssh.ParsePrivateKey(key)
 			if err == nil {
 				authMethods = append(authMethods, ssh.PublicKeys(signer))
+				keyAdded = true
 			}
+		}
+	}
+
+	// Add password as fallback if key wasn't added, or as primary if no key
+	if password != "" {
+		if keyAdded {
+			// Key first, then password as fallback
+			authMethods = append(authMethods, ssh.Password(password))
+		} else {
+			// Password first if no key
+			authMethods = append([]ssh.AuthMethod{ssh.Password(password)}, authMethods...)
 		}
 	}
 
@@ -167,19 +180,10 @@ func buildSSHConfig(h Host) (*ssh.ClientConfig, error) {
 		return nil, fmt.Errorf("no authentication method available")
 	}
 
-	hostKeyCallback := ssh.InsecureIgnoreHostKey()
-	knownHostsPath := filepath.Join(home, ".ssh", "known_hosts")
-	if _, err := os.Stat(knownHostsPath); err == nil {
-		callback, err := knownhosts.New(knownHostsPath)
-		if err == nil {
-			hostKeyCallback = callback
-		}
-	}
-
 	config := &ssh.ClientConfig{
 		User:            h.User,
 		Auth:            authMethods,
-		HostKeyCallback: hostKeyCallback,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         10 * time.Second,
 	}
 

@@ -37,6 +37,9 @@ type Model struct {
 	connecting   bool
 	toast        string
 	toastTimer   int
+	toastSuccess bool
+	sshLog       []string
+	showPassword bool
 }
 
 func New() Model {
@@ -48,13 +51,17 @@ func New() Model {
 }
 
 func (m *Model) initAddHostInputs() {
-	m.inputs = make([]textinput.Model, 4)
+	m.inputs = make([]textinput.Model, 6)
 
 	for i := range m.inputs {
 		m.inputs[i] = textinput.New()
 		m.inputs[i].Prompt = ""
 		m.inputs[i].CharLimit = 256
 		m.inputs[i].Width = 40
+		if i == 4 {
+			m.inputs[i].EchoMode = textinput.EchoPassword
+			m.inputs[i].EchoCharacter = '•'
+		}
 	}
 
 	m.inputs[0].Placeholder = "e.g. prod-server"
@@ -62,6 +69,8 @@ func (m *Model) initAddHostInputs() {
 	m.inputs[2].Placeholder = "root"
 	m.inputs[3].Placeholder = "22"
 	m.inputs[3].CharLimit = 5
+	m.inputs[4].Placeholder = "password (for first-time key setup, optional)"
+	m.inputs[5].Placeholder = "y/n (auto-generate SSH key?)"
 
 	m.inputs[0].Focus()
 	m.inputFocus = 0
@@ -96,8 +105,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sshErrorMsg:
-		m.toast = string(msg)
+		errorMsg := string(msg)
+		m.sshLog = append(m.sshLog, fmt.Sprintf("✕ Error: %s", errorMsg))
+		m.toast = errorMsg
+		m.toastSuccess = false
 		m.toastTimer = 50
+		m.connecting = false
 		m.view = ViewHome
 		if m.sshSession != nil {
 			m.sshSession.Close()
@@ -108,6 +121,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sshConnectedMsg:
 		m.connecting = false
 		m.sshSession = msg.session
+		m.sshLog = append(m.sshLog, "✓ Connected")
 		if m.width > 0 && m.height > 0 {
 			m.sshSession.Resize(m.width, m.height-2)
 		}
@@ -128,6 +142,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toastTimer--
 			if m.toastTimer == 0 {
 				m.toast = ""
+				m.toastSuccess = false
 			} else {
 				return m, tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 			}
@@ -173,6 +188,7 @@ func (m Model) updateHome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.connecting = true
 			m.view = ViewSSH
 			m.sshOutput.Reset()
+			m.sshLog = []string{"→ Connecting..."}
 			return m, m.connectSSH()
 		}
 	}
@@ -181,11 +197,21 @@ func (m Model) updateHome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateAddHost(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Handle special keys first
 	switch msg.String() {
+	case "ctrl+p":
+		m.showPassword = !m.showPassword
+		if m.showPassword {
+			m.inputs[4].EchoMode = textinput.EchoNormal
+		} else {
+			m.inputs[4].EchoMode = textinput.EchoPassword
+			m.inputs[4].EchoCharacter = '•'
+		}
+		return m, nil
+
 	case "esc":
 		m.view = ViewHome
 		m.inputs = nil
+		m.showPassword = false
 		return m, nil
 
 	case "enter":
@@ -194,10 +220,13 @@ func (m Model) updateAddHost(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputFocus++
 			return m, m.inputs[m.inputFocus].Focus()
 		}
+		if m.inputFocus < len(m.inputs)-1 {
+			m.inputs[m.inputFocus].Blur()
+			m.inputFocus++
+			return m, m.inputs[m.inputFocus].Focus()
+		}
 		if m.inputs[0].Value() != "" && m.inputs[1].Value() != "" {
 			m.saveHost()
-			m.view = ViewHome
-			m.inputs = nil
 			if m.toastTimer > 0 {
 				return m, tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 			}
@@ -249,6 +278,7 @@ func (m *Model) saveHost() {
 
 	if name == "" || hostname == "" {
 		m.toast = "Name and Host are required"
+		m.toastSuccess = false
 		m.toastTimer = 50
 		return
 	}
@@ -263,23 +293,108 @@ func (m *Model) saveHost() {
 		user = "root"
 	}
 
+	password := m.inputs[4].Value()
+	autoGenKey := strings.ToLower(m.inputs[5].Value()) == "y" || strings.ToLower(m.inputs[5].Value()) == "yes"
+
+	var identityFile string
+	if autoGenKey {
+		privatePath, _, err := ssh.GenerateKeyPair(name)
+		if err != nil {
+			m.toast = fmt.Sprintf("Failed to generate key: %v", err)
+			m.toastSuccess = false
+			m.toastTimer = 50
+			return
+		}
+		identityFile = privatePath
+	}
+
+	sshHost := ssh.Host{
+		Name:         name,
+		Hostname:     hostname,
+		User:         user,
+		Port:         port,
+		IdentityFile: identityFile,
+	}
+
+	if password == "" && identityFile == "" {
+		m.toast = "Password or existing key required for validation"
+		m.toastSuccess = false
+		m.toastTimer = 50
+		return
+	}
+
+	m.toast = "→ Validating connection..."
+	m.toastSuccess = false
+	m.toastTimer = 100
+
+	if err := ssh.ValidateConnection(sshHost, password); err != nil {
+		m.toast = fmt.Sprintf("Validation failed: %v", err)
+		m.toastSuccess = false
+		m.toastTimer = 50
+		return
+	}
+
+	var encryptedPassword string
+	if password != "" {
+		var err error
+		encryptedPassword, err = config.EncryptPassword(password)
+		if err != nil {
+			m.toast = fmt.Sprintf("Failed to encrypt password: %v", err)
+			m.toastSuccess = false
+			m.toastTimer = 50
+			return
+		}
+	}
+
+	keyDeployed := false
+	if autoGenKey && password != "" && identityFile != "" {
+		m.toast = "→ Deploying SSH key..."
+		m.toastSuccess = false
+		m.toastTimer = 100
+		publicKeyPath := identityFile + ".pub"
+		if err := ssh.DeployPublicKey(sshHost, password, publicKeyPath); err == nil {
+			keyDeployed = true
+			m.toast = "✓ SSH key deployed successfully"
+			m.toastSuccess = true
+			m.toastTimer = 30
+		} else {
+			m.toast = fmt.Sprintf("Key deployment failed: %v", err)
+			m.toastSuccess = false
+			m.toastTimer = 50
+			return
+		}
+	}
+
 	h := config.Host{
-		Name:     name,
-		Hostname: hostname,
-		User:     user,
-		Port:     port,
+		Name:            name,
+		Hostname:        hostname,
+		User:            user,
+		Port:            port,
+		IdentityFile:    identityFile,
+		Password:        encryptedPassword,
+		KeyDeployed:     keyDeployed,
+		AutoGenerateKey: autoGenKey,
 	}
 
 	config.AddHost(h)
 	if err := config.Save(); err != nil {
 		m.toast = fmt.Sprintf("Failed to save: %v", err)
+		m.toastSuccess = false
 		m.toastTimer = 50
 		return
 	}
 
 	m.hosts = config.GetHosts()
-	m.toast = fmt.Sprintf("Host '%s' added", name)
+	if keyDeployed {
+		m.toast = fmt.Sprintf("Host '%s' ready", name)
+	} else {
+		m.toast = fmt.Sprintf("Host '%s' added", name)
+	}
+	m.toastSuccess = true
 	m.toastTimer = 30
+	m.view = ViewHome
+	m.inputs = nil
+	m.showPassword = false
 }
 
 func (m Model) View() string {
@@ -300,21 +415,37 @@ type sshConnectedMsg struct {
 }
 type tickMsg struct{}
 
+
 func (m Model) connectSSH() tea.Cmd {
 	return func() tea.Msg {
 		if m.sshHost == nil {
 			return sshErrorMsg("no host selected")
 		}
 
+		host := m.sshHost
 		h := ssh.Host{
-			Name:         m.sshHost.Name,
-			Hostname:     m.sshHost.Hostname,
-			User:         m.sshHost.User,
-			Port:         m.sshHost.Port,
-			IdentityFile: m.sshHost.IdentityFile,
+			Name:         host.Name,
+			Hostname:     host.Hostname,
+			User:         host.User,
+			Port:         host.Port,
+			IdentityFile: host.IdentityFile,
 		}
 
-		session, err := ssh.Connect(h)
+		var password string
+		if host.Password != "" {
+			decrypted, err := config.DecryptPassword(host.Password)
+			if err != nil {
+				return sshErrorMsg(fmt.Sprintf("failed to decrypt password: %v", err))
+			}
+			password = decrypted
+		}
+
+		if password == "" && host.IdentityFile == "" {
+			return sshErrorMsg("no authentication method available (need password or key)")
+		}
+
+		skipKey := !host.KeyDeployed && host.IdentityFile != ""
+		session, err := ssh.Connect(h, password, skipKey)
 		if err != nil {
 			return sshErrorMsg(err.Error())
 		}
@@ -322,6 +453,7 @@ func (m Model) connectSSH() tea.Cmd {
 		return sshConnectedMsg{session: session}
 	}
 }
+
 
 func (m Model) readSSHOutput() tea.Cmd {
 	return func() tea.Msg {
@@ -355,6 +487,7 @@ func (m Model) updateSSH(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewHome
 		m.sshHost = nil
 		m.sshOutput.Reset()
+		m.sshLog = nil
 		return m, nil
 
 	case key.Matches(msg, m.keys.Quit):

@@ -12,12 +12,15 @@ type Config struct {
 }
 
 type Host struct {
-	Name         string   `mapstructure:"name"`
-	Hostname     string   `mapstructure:"hostname"`
-	User         string   `mapstructure:"user"`
-	Port         int      `mapstructure:"port"`
-	IdentityFile string   `mapstructure:"identity_file"`
-	Tags         []string `mapstructure:"tags"`
+	Name            string   `mapstructure:"name"`
+	Hostname        string   `mapstructure:"hostname"`
+	User            string   `mapstructure:"user"`
+	Port            int      `mapstructure:"port"`
+	IdentityFile    string   `mapstructure:"identity_file"`
+	Password        string   `mapstructure:"password"`         // encrypted
+	KeyDeployed     bool     `mapstructure:"key_deployed"`    // true if key already deployed
+	AutoGenerateKey bool     `mapstructure:"auto_generate_key"` // true if should auto-generate key
+	Tags            []string `mapstructure:"tags"`
 }
 
 var C Config
@@ -74,4 +77,12 @@ func RemoveHost(index int) {
 	C.Hosts = append(C.Hosts[:index], C.Hosts[index+1:]...)
 	viper.Set("hosts", C.Hosts)
 	Save()
+}
+
+func UpdateHost(index int, host Host) {
+	if index < 0 || index >= len(C.Hosts) {
+		return
+	}
+	C.Hosts[index] = host
+	viper.Set("hosts", C.Hosts)
 }

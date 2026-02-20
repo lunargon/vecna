@@ -175,16 +175,25 @@ func (m Model) viewAddHost() string {
 	}
 
 	var fields []string
-	labels := []string{"Name", "Host", "User", "Port"}
+	labels := []string{"Name", "Host", "User", "Port", "Password", "Auto-gen key"}
 
 	for i, input := range m.inputs {
-		label := styleInputLabel.Render(fmt.Sprintf("%s:", labels[i]))
+		labelText := labels[i]
+		if i == 4 {
+			if m.showPassword {
+				labelText += " (visible)"
+			} else {
+				labelText += " (hidden)"
+			}
+		}
+
 		field := input.View()
 
 		if i == m.inputFocus {
+			label := styleInputLabel.Render(fmt.Sprintf("%s:", labelText))
 			fields = append(fields, fmt.Sprintf("%s\n%s", label, field))
 		} else {
-			fields = append(fields, fmt.Sprintf("%s\n%s", styleDim.Render(labels[i]+":"), field))
+			fields = append(fields, fmt.Sprintf("%s\n%s", styleDim.Render(labelText+":"), field))
 		}
 	}
 
@@ -195,7 +204,7 @@ func (m Model) viewAddHost() string {
 		Padding(1, 2).
 		Render(form)
 
-	hint := styleDim.Render("Tab/↓: next • Shift+Tab/↑: prev • Enter: save • Esc: cancel")
+	hint := styleDim.Render("Tab/↓: next • Shift+Tab/↑: prev • Ctrl+P: toggle password • Enter: save • Esc: cancel")
 
 	mainView := lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -224,8 +233,21 @@ func (m Model) viewSSH() string {
 	}
 
 	var content string
-	if m.connecting {
-		content = styleDim.Render("Connecting...")
+	if m.connecting || len(m.sshLog) > 0 {
+		var lines []string
+		for _, log := range m.sshLog {
+			lines = append(lines, log)
+		}
+		if m.connecting {
+			lines = append(lines, styleDim.Render("→ Connecting..."))
+		}
+		logContent := strings.Join(lines, "\n")
+		
+		output := m.sshOutput.String()
+		if output != "" {
+			logContent += "\n\n" + styleDim.Render("─ Terminal Output ─") + "\n" + output
+		}
+		content = logContent
 	} else if m.err != nil {
 		content = styleError.Render(fmt.Sprintf("Error: %v", m.err))
 	} else {
@@ -274,7 +296,12 @@ func (m Model) renderWithToast(content string) string {
 		toastText = toastText[:maxWidth-3] + "..."
 	}
 
-	toast := styleToast.Render(fmt.Sprintf("✕ %s", toastText))
+	var toast string
+	if m.toastSuccess {
+		toast = styleToastSuccess.Render(fmt.Sprintf("✓ %s", toastText))
+	} else {
+		toast = styleToast.Render(fmt.Sprintf("✕ %s", toastText))
+	}
 	toastWidth := lipgloss.Width(toast)
 
 	lines := strings.Split(content, "\n")

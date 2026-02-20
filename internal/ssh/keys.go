@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -84,16 +85,43 @@ func DeployPublicKey(host Host, password, publicKeyPath string) error {
 	}
 	defer session.Close()
 
-	sshDir := "~/.ssh"
-	authorizedKeys := sshDir + "/authorized_keys"
+	publicKeyStr := strings.TrimSpace(string(publicKey))
+	
+	var stdout, stderr strings.Builder
+	session.Stdout = &stdout
+	session.Stderr = &stderr
 
-	cmd := fmt.Sprintf(
-		"mkdir -p %s && chmod 700 %s && echo '%s' >> %s && chmod 600 %s",
-		sshDir, sshDir, string(publicKey), authorizedKeys, authorizedKeys,
-	)
+	cmd := fmt.Sprintf(`
+		mkdir -p ~/.ssh && 
+		chmod 700 ~/.ssh && 
+		if [ ! -f ~/.ssh/authorized_keys ]; then 
+			touch ~/.ssh/authorized_keys && 
+			chmod 600 ~/.ssh/authorized_keys; 
+		fi && 
+		if ! grep -qF "%s" ~/.ssh/authorized_keys; then 
+			echo "%s" >> ~/.ssh/authorized_keys && 
+			chmod 600 ~/.ssh/authorized_keys; 
+		fi
+	`, publicKeyStr, publicKeyStr)
 
 	if err := session.Run(cmd); err != nil {
-		return fmt.Errorf("failed to deploy key: %w", err)
+		errMsg := stderr.String()
+		if errMsg == "" {
+			errMsg = stdout.String()
+		}
+		return fmt.Errorf("failed to deploy key: %w (output: %s)", err, errMsg)
+	}
+
+	verifySession, err := client.NewSession()
+	if err == nil {
+		defer verifySession.Close()
+		var verifyStdout, verifyStderr strings.Builder
+		verifySession.Stdout = &verifyStdout
+		verifySession.Stderr = &verifyStderr
+		verifyCmd := fmt.Sprintf(`grep -qF "%s" ~/.ssh/authorized_keys`, publicKeyStr)
+		if err := verifySession.Run(verifyCmd); err != nil {
+			return fmt.Errorf("key deployment verification failed: key not found in authorized_keys")
+		}
 	}
 
 	return nil
