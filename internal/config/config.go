@@ -49,7 +49,13 @@ func Init(cfgFile string) {
 }
 
 func Save() error {
-	return viper.WriteConfig()
+	err := viper.WriteConfig()
+	if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+		home, _ := os.UserHomeDir()
+		configPath := filepath.Join(home, ".config", "vecna", "config.yaml")
+		return viper.WriteConfigAs(configPath)
+	}
+	return err
 }
 
 func GetHosts() []Host {
@@ -59,4 +65,13 @@ func GetHosts() []Host {
 func AddHost(h Host) {
 	C.Hosts = append(C.Hosts, h)
 	viper.Set("hosts", C.Hosts)
+}
+
+func RemoveHost(index int) {
+	if index < 0 || index >= len(C.Hosts) {
+		return
+	}
+	C.Hosts = append(C.Hosts[:index], C.Hosts[index+1:]...)
+	viper.Set("hosts", C.Hosts)
+	Save()
 }
