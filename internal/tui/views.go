@@ -5,7 +5,61 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/shravan20/vecna/internal/config"
 )
+
+// stripANSI removes VT100/ANSI escape sequences so we don't send clear-screen etc. to the terminal.
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] != 0x1b {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		i++
+		if i >= len(s) {
+			break
+		}
+		switch s[i] {
+		case '[':
+			// CSI: skip until letter
+			i++
+			for i < len(s) && (s[i] < 0x40 || s[i] > 0x7e) {
+				i++
+			}
+			if i < len(s) {
+				i++
+			}
+		case ']':
+			// OSC: skip until BEL or ST
+			i++
+			for i < len(s) {
+				if s[i] == 0x07 {
+					i++
+					break
+				}
+				if i+1 < len(s) && s[i] == 0x1b && s[i+1] == '\\' {
+					i += 2
+					break
+				}
+				i++
+			}
+		case '(', ')', '*', '+', '-', '.', '/':
+			// two-byte sequence
+			if i+1 < len(s) {
+				i += 2
+			} else {
+				i = len(s)
+			}
+		default:
+			i++
+		}
+	}
+	return b.String()
+}
 
 func (m Model) viewHome() string {
 	if m.width == 0 {
@@ -51,13 +105,20 @@ func (m Model) viewHome() string {
 
 func (m Model) renderHostsPanel(width, height int) string {
 	title := stylePanelTitle.Render("HOSTS")
+	entries := m.filteredHostEntries()
+	filterLine := "Filter: " + m.hostFilter.View()
 
 	var items []string
-	if len(m.hosts) == 0 {
+	items = append(items, "", filterLine, "")
+	if len(entries) == 0 {
 		items = append(items, styleDim.Render("  No hosts yet"))
 		items = append(items, styleDim.Render("  Press 'a' to add"))
+		if m.hostFilter.Value() != "" {
+			items = append(items, styleDim.Render("  (no match)"))
+		}
 	} else {
-		for i, h := range m.hosts {
+		for i, e := range entries {
+			h := e.Host
 			status := styleStatusOnline.Render("●")
 			name := h.Name
 			info := styleDim.Render(fmt.Sprintf("%s@%s", h.User, h.Hostname))
@@ -74,7 +135,7 @@ func (m Model) renderHostsPanel(width, height int) string {
 		}
 	}
 
-	listHeight := height - 3
+	listHeight := height - 2
 	if listHeight < 1 {
 		listHeight = 1
 	}
@@ -87,7 +148,7 @@ func (m Model) renderHostsPanel(width, height int) string {
 	}
 
 	list := strings.Join(items, "\n")
-	panelContent := lipgloss.JoinVertical(lipgloss.Left, title, "", list)
+	panelContent := lipgloss.JoinVertical(lipgloss.Left, title, list)
 
 	panel := stylePanelActive.
 		Width(width).
@@ -99,12 +160,13 @@ func (m Model) renderHostsPanel(width, height int) string {
 
 func (m Model) renderDetailPanel(width, height int) string {
 	title := stylePanelTitle.Render("DETAILS")
+	entries := m.filteredHostEntries()
 
 	var content string
-	if len(m.hosts) == 0 || m.cursor >= len(m.hosts) {
+	if len(entries) == 0 || m.cursor >= len(entries) {
 		content = styleDim.Render("Select a host to view details")
 	} else {
-		h := m.hosts[m.cursor]
+		h := entries[m.cursor].Host
 		lines := []string{
 			fmt.Sprintf("%s  %s", styleKey.Render("Name"), h.Name),
 			fmt.Sprintf("%s  %s", styleKey.Render("Host"), h.Hostname),
@@ -117,6 +179,9 @@ func (m Model) renderDetailPanel(width, height int) string {
 		if len(h.Tags) > 0 {
 			lines = append(lines, fmt.Sprintf("%s  %s", styleKey.Render("Tags"), strings.Join(h.Tags, ", ")))
 		}
+		if h.ProxyJump != "" {
+			lines = append(lines, fmt.Sprintf("%s  %s", styleKey.Render("Jump"), h.ProxyJump))
+		}
 
 		lines = append(lines, "")
 		lines = append(lines, stylePanelTitle.Render("ACTIONS"))
@@ -125,6 +190,8 @@ func (m Model) renderDetailPanel(width, height int) string {
 		lines = append(lines, fmt.Sprintf("  %s  Edit host", styleKey.Render("e")))
 		lines = append(lines, fmt.Sprintf("  %s  SFTP browser", styleKey.Render("f")))
 		lines = append(lines, fmt.Sprintf("  %s  Port forward", styleKey.Render("p")))
+		lines = append(lines, fmt.Sprintf("  %s  Run command", styleKey.Render("r")))
+		lines = append(lines, fmt.Sprintf("  %s  File transfer", styleKey.Render("t")))
 
 		content = strings.Join(lines, "\n")
 	}
@@ -141,9 +208,10 @@ func (m Model) renderDetailPanel(width, height int) string {
 
 func (m Model) renderStatusBar() string {
 	keys := []string{
+		keyHint("1-9", "tab"),
+		keyHint("ctrl+←/→", "switch"),
+		keyHint("/", "filter"),
 		keyHint("↑↓", "nav"),
-		keyHint("a", "add"),
-		keyHint("d", "del"),
 		keyHint("c", "connect"),
 		keyHint("?", "help"),
 		keyHint("q", "quit"),
@@ -167,7 +235,11 @@ func (m Model) viewAddHost() string {
 	}
 
 	logo := styleLogo.Render("◈ VECNA")
-	header := styleHeader.Render(logo + styleDim.Render(" / Add Host"))
+	headerLabel := " / Add Host"
+	if m.editingHostIndex >= 0 {
+		headerLabel = " / Edit Host"
+	}
+	header := styleHeader.Render(logo + styleDim.Render(headerLabel))
 
 	formWidth := 50
 	if formWidth > m.width-4 {
@@ -175,7 +247,7 @@ func (m Model) viewAddHost() string {
 	}
 
 	var fields []string
-	labels := []string{"Name", "Host", "User", "Port", "Password", "Auto-gen key"}
+	labels := []string{"Name", "Host", "User", "Port", "Password", "Auto-gen key", "Proxy jump"}
 
 	for i, input := range m.inputs {
 		labelText := labels[i]
@@ -218,44 +290,232 @@ func (m Model) viewAddHost() string {
 	return m.renderWithToast(mainView)
 }
 
-func (m Model) viewSSH() string {
+func (m Model) viewPortForward() string {
+	if m.width == 0 {
+		return renderLoader(40, 12, m.animFrame, "Loading...")
+	}
+
+	logo := styleLogo.Render("◈ VECNA")
+	header := styleHeader.Render(logo + styleDim.Render(" / Port Forward"))
+
+	formWidth := 50
+	if formWidth > m.width-4 {
+		formWidth = m.width - 4
+	}
+
+	labels := []string{"Local port", "Remote host", "Remote port"}
+	var fields []string
+	for i, input := range m.portForwardInputs {
+		label := labels[i]
+		if i == m.portForwardFocus {
+			fields = append(fields, styleInputLabel.Render(label+":")+"\n"+input.View())
+		} else {
+			fields = append(fields, styleDim.Render(label+":")+"\n"+input.View())
+		}
+	}
+	form := strings.Join(fields, "\n\n")
+
+	panel := stylePanelActive.Width(formWidth).Padding(1, 2).Render(form)
+
+	activeTitle := stylePanelTitle.Render("ACTIVE FORWARDS")
+	var listLines []string
+	if len(m.activeForwards) == 0 {
+		listLines = append(listLines, styleDim.Render("  None"))
+	} else {
+		for i, f := range m.activeForwards {
+			line := fmt.Sprintf("  %s → %s", f.localAddr, f.remoteAddr)
+			if i == m.portForwardCursor && m.portForwardFocus == 3 {
+				line = " ▸ " + styleListItemSelected.Render(line)
+			} else {
+				line = "   " + styleListItem.Render(line)
+			}
+			listLines = append(listLines, line)
+		}
+	}
+	listContent := strings.Join(listLines, "\n")
+	listPanel := stylePanel.Width(formWidth).Padding(1, 2).Render(activeTitle + "\n\n" + listContent)
+
+	var status string
+	if m.portForwardStarting {
+		status = styleDim.Render("Starting forward...")
+	} else {
+		status = keyHint("Tab", "next") + "  " + keyHint("Enter", "start") + "  " + keyHint("d", "stop") + "  " + keyHint("esc", "back")
+	}
+
+	mainView := lipgloss.JoinVertical(
+		lipgloss.Left,
+		header,
+		"",
+		panel,
+		"",
+		listPanel,
+		"",
+		styleStatusBar.Render(status),
+	)
+	return m.renderWithToast(mainView)
+}
+
+func (m Model) viewRunCommand() string {
+	if m.width == 0 {
+		return renderLoader(40, 12, m.animFrame, "Loading...")
+	}
+
+	logo := styleLogo.Render("◈ VECNA")
+	header := styleHeader.Render(logo + styleDim.Render(" / Run command"))
+	commands := config.GetCommands()
+
+	if m.runCommandOutput != "" {
+		lines := strings.Split(m.runCommandOutput, "\n")
+		maxH := m.height - 6
+		if maxH < 5 {
+			maxH = 5
+		}
+		if len(lines) > maxH {
+			lines = lines[len(lines)-maxH:]
+		}
+		content := strings.Join(lines, "\n")
+		status := styleStatusBar.Render(keyHint("esc", "back"))
+		return lipgloss.JoinVertical(lipgloss.Left, header, "", content, "", status)
+	}
+
+	if m.runCommandRunning {
+		loader := renderLoader(40, 8, m.animFrame, "Running...")
+		return lipgloss.JoinVertical(lipgloss.Left, header, "", loader)
+	}
+
+	var listLines []string
+	if len(commands) == 0 {
+		listLines = append(listLines, styleDim.Render("  No saved commands"))
+		listLines = append(listLines, styleDim.Render("  Add to config: commands: [{ label: \"...\", command: \"...\" }]"))
+	} else {
+		for i, c := range commands {
+			line := fmt.Sprintf("  %s", c.Label)
+			if c.Command != "" {
+				line += styleDim.Render("  → "+c.Command)
+			}
+			if i == m.runCommandCursor {
+				line = " ▸ " + styleListItemSelected.Render(line)
+			} else {
+				line = "   " + styleListItem.Render(line)
+			}
+			listLines = append(listLines, line)
+		}
+	}
+	list := strings.Join(listLines, "\n")
+	panel := stylePanelActive.Width(60).Padding(1, 2).Render(list)
+	status := styleStatusBar.Render(keyHint("↑↓", "nav") + "  " + keyHint("⏎", "run") + "  " + keyHint("esc", "back"))
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", panel, "", status)
+}
+
+func (m Model) viewFileTransfer() string {
+	if m.width == 0 {
+		return renderLoader(40, 12, m.animFrame, "Loading...")
+	}
+
+	logo := styleLogo.Render("◈ VECNA")
+	header := styleHeader.Render(logo + styleDim.Render(" / File transfer"))
+
+	if m.transferOutput != "" {
+		lines := strings.Split(m.transferOutput, "\n")
+		maxH := m.height - 6
+		if maxH < 5 {
+			maxH = 5
+		}
+		if len(lines) > maxH {
+			lines = lines[len(lines)-maxH:]
+		}
+		content := strings.Join(lines, "\n")
+		status := styleStatusBar.Render(keyHint("esc", "back"))
+		return lipgloss.JoinVertical(lipgloss.Left, header, "", content, "", status)
+	}
+
+	if m.transferRunning {
+		loader := renderLoader(40, 8, m.animFrame, "Transferring...")
+		return lipgloss.JoinVertical(lipgloss.Left, header, "", loader)
+	}
+
+	labels := []string{"Direction (push/pull)", "Local path", "Remote path"}
+	var fields []string
+	for i, input := range m.transferInputs {
+		l := labels[i]
+		if i == m.transferFocus {
+			fields = append(fields, styleInputLabel.Render(l+":")+"\n"+input.View())
+		} else {
+			fields = append(fields, styleDim.Render(l+":")+"\n"+input.View())
+		}
+	}
+	form := strings.Join(fields, "\n\n")
+	panel := stylePanelActive.Width(55).Padding(1, 2).Render(form)
+	status := styleStatusBar.Render(keyHint("Tab", "next") + "  " + keyHint("Enter", "run") + "  " + keyHint("esc", "back"))
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", panel, "", status)
+}
+
+func (m Model) viewWithTabs() string {
+	tabBar := m.renderTabBar()
+	var content string
+	if m.currentTabIndex == 0 {
+		content = m.viewHome()
+	} else if m.currentTabIndex < len(m.tabs) {
+		content = m.viewSSHTab(m.tabs[m.currentTabIndex])
+	} else {
+		content = m.viewHome()
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, tabBar, content)
+}
+
+func (m Model) renderTabBar() string {
+	var parts []string
+	for i, t := range m.tabs {
+		title := t.Title
+		if t.Connecting {
+			title = t.Title + " …"
+		}
+		if i == m.currentTabIndex {
+			parts = append(parts, styleTabActive.Render(title))
+		} else {
+			parts = append(parts, styleTab.Render(title))
+		}
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+}
+
+func (m Model) viewSSHTab(t tab) string {
 	if m.width == 0 {
 		return renderLoader(40, 12, m.animFrame, "Starting up...")
 	}
-
-	if m.connecting {
+	if t.Connecting {
 		terminalHeight := m.height - 4
 		if terminalHeight < 5 {
 			terminalHeight = 5
 		}
-
-		var msg string
-		if m.sshHost != nil {
-			msg = fmt.Sprintf("Connecting to %s@%s ...", m.sshHost.User, m.sshHost.Hostname)
-		} else {
-			msg = "Connecting..."
+		msg := "Connecting..."
+		if t.Host.Hostname != "" {
+			msg = fmt.Sprintf("Connecting to %s@%s ...", t.Host.User, t.Host.Hostname)
 		}
-
 		loader := renderLoaderFullscreen(m.width, m.height, m.animFrame, terminalHeight, msg)
-		statusBar := styleStatusBar.Render(keyHint("ctrl+]", "cancel"))
-
-		mainView := lipgloss.JoinVertical(
-			lipgloss.Left,
-			loader,
-			"",
-			statusBar,
-		)
-		return m.renderWithToast(mainView)
+		statusBar := styleStatusBar.Render(keyHint("esc", "cancel") + "  " + keyHint("ctrl+q", "cancel"))
+		return lipgloss.JoinVertical(lipgloss.Left, loader, "", statusBar)
 	}
-
-	// Full-screen terminal: render VT buffer directly
-	if m.sshVT != nil {
-		m.sshVT.Lock()
-		screen := m.sshVT.String()
-		m.sshVT.Unlock()
-		return screen
+	if t.Session != nil {
+		raw := t.Output
+		output := stripANSI(raw)
+		output = strings.ReplaceAll(output, "\r\n", "\n")
+		output = strings.ReplaceAll(output, "\r", "\n")
+		if output == "" {
+			output = styleDim.Render("Waiting for output... (Esc or Ctrl+Q to close tab)")
+		}
+		lines := strings.Split(output, "\n")
+		maxLines := m.height - 2
+		if maxLines < 5 {
+			maxLines = 5
+		}
+		if len(lines) > maxLines {
+			lines = lines[len(lines)-maxLines:]
+		}
+		screen := strings.Join(lines, "\n")
+		statusBar := styleStatusBar.Render(keyHint("1-9", "tab") + "  " + keyHint("ctrl+←/→", "switch") + "  " + keyHint("esc", "close"))
+		return screen + "\n" + statusBar
 	}
-
 	return styleDim.Render("No active session")
 }
 
