@@ -79,7 +79,9 @@ func Connect(h Host, password string, skipKeyIfNotDeployed bool, jumpHost *Host,
 		return nil, fmt.Errorf("failed to get stderr: %w", err)
 	}
 
-	if err := session.Shell(); err != nil {
+	// Start bash explicitly so we avoid the remote user's default shell (e.g. zsh/oh-my-zsh)
+	// which can cause typing/autocomplete quirks. Use -l for login shell so .bash_profile is loaded.
+	if err := session.Start("bash -l"); err != nil {
 		stdin.Close()
 		session.Close()
 		client.Close()

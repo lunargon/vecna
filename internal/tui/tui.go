@@ -80,9 +80,13 @@ type Model struct {
 	homeFocus  int // 0 = list, 1 = filter input
 
 	// Run command view
-	runCommandCursor  int
-	runCommandOutput  string
-	runCommandRunning bool
+	runCommandCursor     int
+	runCommandOutput     string
+	runCommandRunning    bool
+	runCommandHosts      []config.Host // hosts to run on (1 = current only, 2+ = multi)
+	runCommandMultiResults []runCommandHostResult
+	// Multi-select on home: host name -> selected
+	selectedHostNames map[string]bool
 
 	// File transfer view
 	transferInputs  []textinput.Model
@@ -143,6 +147,7 @@ func New() Model {
 		hosts:            config.GetHosts(),
 		hostFilter:       f,
 		homeFocus:        0,
+		selectedHostNames: make(map[string]bool),
 		tabs:             []tab{{Id: 0, Kind: tabKindHome, Title: "Hosts"}},
 		currentTabIndex:  0,
 		nextTabId:        1,
@@ -267,15 +272,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch m.view {
 		case ViewHome:
-			// Tab switching: 1-9, Ctrl+Left, Ctrl+Right
+			// Tab switching: 1=Hosts, 2=first SSH, 3=second SSH, ...; Ctrl+Left/Right
 			switch msg.String() {
 			case "1":
 				m.currentTabIndex = 0
 				return m, nil
 			case "2", "3", "4", "5", "6", "7", "8", "9":
-				idx := int(msg.String()[0] - '1')
-				if idx+1 < len(m.tabs) {
-					m.currentTabIndex = idx + 1
+				idx := int(msg.String()[0] - '1') // 1->0, 2->1, 3->2, ...
+				if idx < len(m.tabs) {
+					m.currentTabIndex = idx
 					if t := &m.tabs[m.currentTabIndex]; t.Session != nil {
 						return m, m.readSSHOutput(t.Id, t.Session)
 					}
@@ -318,6 +323,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i := range m.tabs {
 			if m.tabs[i].Id == msg.TabId && msg.Data != "" {
 				m.tabs[i].Output += msg.Data
+				// When remote runs "clear", it sends \x1b[2J; clear our buffer so display updates.
+				if idx := strings.LastIndex(m.tabs[i].Output, "\x1b[2J"); idx >= 0 {
+					m.tabs[i].Output = m.tabs[i].Output[idx+4:]
+				}
 				break
 			}
 		}
@@ -378,7 +387,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tabs[i].Session = msg.session
 				m.tabs[i].Log = append(m.tabs[i].Log, "✓ Connected")
 				m.tabs[i].Output = ""
-				cols, rows := m.width, m.height-2
+				cols, rows := m.width, m.height-3
 				if cols < 80 {
 					cols = 80
 				}
@@ -425,6 +434,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case runCommandMultiResultMsg:
+		m.runCommandRunning = false
+		m.runCommandMultiResults = msg.results
+		return m, nil
+
 	case transferResultMsg:
 		m.transferRunning = false
 		if msg.err != nil {
@@ -441,7 +455,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		if m.currentTabIndex >= 0 && m.currentTabIndex < len(m.tabs) && m.tabs[m.currentTabIndex].Session != nil {
-			m.tabs[m.currentTabIndex].Session.Resize(msg.Width, msg.Height-2)
+			rows := msg.Height - 3
+			if rows < 24 {
+				rows = 24
+			}
+			m.tabs[m.currentTabIndex].Session.Resize(msg.Width, rows)
 		}
 
 	case tea.MouseMsg:
@@ -522,6 +540,19 @@ func (m Model) updateHome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor++
 		}
 
+	case key.Matches(msg, m.keys.ToggleSelect):
+		if len(entries) > 0 && m.cursor < len(entries) {
+			name := entries[m.cursor].Host.Name
+			if m.selectedHostNames[name] {
+				delete(m.selectedHostNames, name)
+			} else {
+				if m.selectedHostNames == nil {
+					m.selectedHostNames = make(map[string]bool)
+				}
+				m.selectedHostNames[name] = true
+			}
+		}
+
 	case key.Matches(msg, m.keys.Add):
 		m.view = ViewAddHost
 		m.editingHostIndex = -1
@@ -583,6 +614,18 @@ func (m Model) updateHome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = ViewRunCommand
 			m.runCommandCursor = 0
 			m.runCommandOutput = ""
+			m.runCommandMultiResults = nil
+			// Build list of hosts to run on: 2+ selected → run on selected; else current only
+			var runHosts []config.Host
+			for _, e := range entries {
+				if m.selectedHostNames[e.Host.Name] {
+					runHosts = append(runHosts, e.Host)
+				}
+			}
+			if len(runHosts) < 2 {
+				runHosts = []config.Host{h}
+			}
+			m.runCommandHosts = runHosts
 			return m, nil
 		}
 
@@ -786,11 +829,12 @@ func (m Model) updatePortForward(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateRunCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	commands := config.GetCommands()
 
-	if m.runCommandOutput != "" {
-		// Showing output: any key (e.g. esc) goes back to home
+	if m.runCommandOutput != "" || len(m.runCommandMultiResults) > 0 {
+		// Showing output: any key (e.g. esc) goes back to list
 		if key.Matches(msg, m.keys.Back) || msg.String() == "q" {
 			m.view = ViewHome
 			m.runCommandOutput = ""
+			m.runCommandMultiResults = nil
 			return m, nil
 		}
 		return m, nil
@@ -818,11 +862,21 @@ func (m Model) updateRunCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Enter):
-		if len(commands) > 0 && m.runCommandCursor < len(commands) && m.sshHost != nil {
+		if len(commands) > 0 && m.runCommandCursor < len(commands) && (m.sshHost != nil || len(m.runCommandHosts) > 0) {
 			cmd := commands[m.runCommandCursor]
 			m.runCommandRunning = true
-			return m, func() tea.Msg {
-				return runCommandCmd(*m.sshHost, cmd.Command)
+			m.runCommandOutput = ""
+			m.runCommandMultiResults = nil
+			if len(m.runCommandHosts) > 1 {
+				return m, runCommandCmdMulti(m.runCommandHosts, cmd.Command)
+			}
+			host := m.sshHost
+			if host == nil && len(m.runCommandHosts) == 1 {
+				h := m.runCommandHosts[0]
+				host = &h
+			}
+			if host != nil {
+				return m, func() tea.Msg { return runCommandCmd(*host, cmd.Command) }
 			}
 		}
 	}
@@ -1075,7 +1129,16 @@ func (m Model) View() string {
 	default:
 		body = m.viewTabContent()
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, tabBar, body)
+	full := lipgloss.JoinVertical(lipgloss.Left, tabBar, body)
+	// Cap total lines so the tab bar (line 1) is never scrolled off.
+	if m.height > 0 {
+		lines := strings.Split(full, "\n")
+		if len(lines) > m.height {
+			lines = lines[:m.height]
+			full = strings.Join(lines, "\n")
+		}
+	}
+	return full
 }
 
 type sshOutputMsg struct {
@@ -1104,6 +1167,16 @@ type portForwardErrorMsg string
 type runCommandResultMsg struct {
 	output string
 	err    error
+}
+
+type runCommandHostResult struct {
+	Host   string
+	Output string
+	Err    error
+}
+
+type runCommandMultiResultMsg struct {
+	results []runCommandHostResult
 }
 
 type transferResultMsg struct {
@@ -1151,6 +1224,26 @@ func runCommandCmd(host config.Host, command string) tea.Msg {
 	}
 	out, err := ssh.RunCommand(sshHost, password, skipKey, jumpHost, jumpPassword, jumpSkipKey, command)
 	return runCommandResultMsg{output: out, err: err}
+}
+
+// runCommandCmdMulti runs the command on each host and returns combined results (runs sequentially).
+func runCommandCmdMulti(hosts []config.Host, command string) tea.Cmd {
+	return func() tea.Msg {
+		results := make([]runCommandHostResult, 0, len(hosts))
+		for _, h := range hosts {
+			msg := runCommandCmd(h, command)
+			res, _ := msg.(runCommandResultMsg)
+			out := res.output
+			if res.err != nil {
+				out = out + "\n" + res.err.Error()
+			}
+			if out == "" {
+				out = "(no output)"
+			}
+			results = append(results, runCommandHostResult{Host: h.Name, Output: out, Err: res.err})
+		}
+		return runCommandMultiResultMsg{results: results}
+	}
 }
 
 func (m *Model) initTransferInputs() {

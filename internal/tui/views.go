@@ -3,10 +3,41 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/shravan20/vecna/internal/config"
 )
+
+// wrapLines breaks text into lines and wraps each line to maxWidth runes (terminal column width).
+// Returns a slice of lines each at most maxWidth runes; long lines are split into multiple lines.
+func wrapLines(text string, maxWidth int) []string {
+	if maxWidth <= 0 {
+		maxWidth = 80
+	}
+	raw := strings.Split(text, "\n")
+	var out []string
+	for _, line := range raw {
+		line = strings.TrimRight(line, "\r")
+		for len(line) > 0 {
+			runeCount := utf8.RuneCountInString(line)
+			if runeCount <= maxWidth {
+				out = append(out, line)
+				break
+			}
+			// take first maxWidth runes
+			n := 0
+			for i := 0; i < maxWidth && n < len(line); {
+				_, size := utf8.DecodeRuneInString(line[n:])
+				n += size
+				i++
+			}
+			out = append(out, line[:n])
+			line = line[n:]
+		}
+	}
+	return out
+}
 
 // stripANSI removes VT100/ANSI escape sequences so we don't send clear-screen etc. to the terminal.
 func stripANSI(s string) string {
@@ -120,16 +151,20 @@ func (m Model) renderHostsPanel(width, height int) string {
 		for i, e := range entries {
 			h := e.Host
 			status := styleStatusOnline.Render("●")
+			sel := " "
+			if m.selectedHostNames[h.Name] {
+				sel = "▣"
+			}
 			name := h.Name
 			info := styleDim.Render(fmt.Sprintf("%s@%s", h.User, h.Hostname))
 
 			var line string
 			if i == m.cursor {
 				name = styleListItemSelected.Render(name)
-				line = fmt.Sprintf(" ▸ %s %s %s", status, name, info)
+				line = fmt.Sprintf(" %s ▸ %s %s %s", sel, status, name, info)
 			} else {
 				name = styleListItem.Render(name)
-				line = fmt.Sprintf("   %s %s %s", status, name, info)
+				line = fmt.Sprintf(" %s   %s %s %s", sel, status, name, info)
 			}
 			items = append(items, line)
 		}
@@ -186,11 +221,12 @@ func (m Model) renderDetailPanel(width, height int) string {
 		lines = append(lines, "")
 		lines = append(lines, stylePanelTitle.Render("ACTIONS"))
 		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %s  Select (multi-run)", styleKey.Render("space")))
 		lines = append(lines, fmt.Sprintf("  %s  SSH into host", styleKey.Render("c")))
 		lines = append(lines, fmt.Sprintf("  %s  Edit host", styleKey.Render("e")))
 		lines = append(lines, fmt.Sprintf("  %s  SFTP browser", styleKey.Render("f")))
 		lines = append(lines, fmt.Sprintf("  %s  Port forward", styleKey.Render("p")))
-		lines = append(lines, fmt.Sprintf("  %s  Run command", styleKey.Render("r")))
+		lines = append(lines, fmt.Sprintf("  %s  Run command (on selected)", styleKey.Render("r")))
 		lines = append(lines, fmt.Sprintf("  %s  File transfer", styleKey.Render("t")))
 
 		content = strings.Join(lines, "\n")
@@ -211,8 +247,10 @@ func (m Model) renderStatusBar() string {
 		keyHint("1-9", "tab"),
 		keyHint("ctrl+←/→", "switch"),
 		keyHint("/", "filter"),
+		keyHint("space", "select"),
 		keyHint("↑↓", "nav"),
 		keyHint("c", "connect"),
+		keyHint("r", "run cmd"),
 		keyHint("?", "help"),
 		keyHint("q", "quit"),
 	}
@@ -364,6 +402,31 @@ func (m Model) viewRunCommand() string {
 	header := styleHeader.Render(logo + styleDim.Render(" / Run command"))
 	commands := config.GetCommands()
 
+	// Multi-host results: show each host's output with a header
+	if len(m.runCommandMultiResults) > 0 {
+		var blocks []string
+		for _, r := range m.runCommandMultiResults {
+			block := "═══ " + r.Host + " ═══"
+			if r.Err != nil {
+				block += " (error)"
+			}
+			block += "\n" + r.Output
+			blocks = append(blocks, block)
+		}
+		content := strings.Join(blocks, "\n\n")
+		lines := strings.Split(content, "\n")
+		maxH := m.height - 6
+		if maxH < 5 {
+			maxH = 5
+		}
+		if len(lines) > maxH {
+			lines = lines[len(lines)-maxH:]
+		}
+		content = strings.Join(lines, "\n")
+		status := styleStatusBar.Render(keyHint("esc", "back"))
+		return lipgloss.JoinVertical(lipgloss.Left, header, "", content, "", status)
+	}
+
 	if m.runCommandOutput != "" {
 		lines := strings.Split(m.runCommandOutput, "\n")
 		maxH := m.height - 6
@@ -379,11 +442,23 @@ func (m Model) viewRunCommand() string {
 	}
 
 	if m.runCommandRunning {
-		loader := renderLoader(40, 8, m.animFrame, "Running...")
+		msg := "Running..."
+		if len(m.runCommandHosts) > 1 {
+			msg = fmt.Sprintf("Running on %d hosts...", len(m.runCommandHosts))
+		}
+		loader := renderLoader(40, 8, m.animFrame, msg)
 		return lipgloss.JoinVertical(lipgloss.Left, header, "", loader)
 	}
 
 	var listLines []string
+	if len(m.runCommandHosts) > 1 {
+		names := make([]string, 0, len(m.runCommandHosts))
+		for _, h := range m.runCommandHosts {
+			names = append(names, h.Name)
+		}
+		listLines = append(listLines, styleDim.Render("  On: "+strings.Join(names, ", ")))
+		listLines = append(listLines, "")
+	}
 	if len(commands) == 0 {
 		listLines = append(listLines, styleDim.Render("  No saved commands"))
 		listLines = append(listLines, styleDim.Render("  Add to config: commands: [{ label: \"...\", command: \"...\" }]"))
@@ -502,17 +577,26 @@ func (m Model) viewSSHTab(t tab) string {
 		if output == "" {
 			output = styleDim.Render("Waiting for output... (Esc or Ctrl+Q to close tab)")
 		}
-		lines := strings.Split(output, "\n")
-		maxLines := m.height - 2
-		if maxLines < 5 {
-			maxLines = 5
+		termWidth := m.width
+		if termWidth < 40 {
+			termWidth = 40
 		}
-		if len(lines) > maxLines {
-			lines = lines[len(lines)-maxLines:]
+		// Reserve 1 line for tab bar, 1 for status bar so the full view fits on screen.
+		termHeight := m.height - 3
+		if termHeight < 5 {
+			termHeight = 5
+		}
+		lines := wrapLines(output, termWidth-2)
+		if len(lines) > termHeight {
+			lines = lines[len(lines)-termHeight:]
 		}
 		screen := strings.Join(lines, "\n")
 		statusBar := styleStatusBar.Render(keyHint("1-9", "tab") + "  " + keyHint("ctrl+←/→", "switch") + "  " + keyHint("esc", "close"))
-		return screen + "\n" + statusBar
+		terminalBox := stylePanelActive.
+			Width(termWidth).
+			Height(termHeight).
+			Render(screen)
+		return terminalBox + "\n" + statusBar
 	}
 	return styleDim.Render("No active session")
 }

@@ -17,8 +17,9 @@ type KeyMap struct {
 	ShiftTab key.Binding
 	SFTP     key.Binding
 	Forward    key.Binding
-	RunCommand key.Binding
-	Transfer   key.Binding
+	RunCommand   key.Binding
+	Transfer     key.Binding
+	ToggleSelect key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -86,6 +87,10 @@ func DefaultKeyMap() KeyMap {
 		Transfer: key.NewBinding(
 			key.WithKeys("t"),
 			key.WithHelp("t", "transfer"),
+		),
+		ToggleSelect: key.NewBinding(
+			key.WithKeys(" "),
+			key.WithHelp("space", "select"),
 		),
 	}
 }
