@@ -52,6 +52,22 @@ commands:                  # optional: saved commands for "Run command" (r)
 
 Issues and PRs welcome. Tag releases with semver (`v1.0.0`); CI builds and publishes.
 
+## About
+
+I spend a lot of time on servers and bare metals for deployments, containerizing dev environments, self-hosted setups. That means a lot of SSH sessions. Jumping between servers. Moving files across machines. Running repetitive ops commands.
+
+Even though I do maintain aliases and scripts, but it still takes time and cognitive energy. I have to remember flags, paths, hostnames, sequences. Small friction that compounds.
+
+I revisited my SSH workflows and started thinking about how much friction I quietly tolerate every day. I have to memorize commands, jumping between terminals, relying on aliases, constant context switching.
+
+So instead of memorizing commands, why not solve it to that reduce cognitive load?
+
+That led to Vecna (yes, Stranger Things reference, lol yep xD).
+
+Idea: centralize control, reduce friction, make SSH-driven workflows better and more structured.
+
+It is still in a very early stage, mostly ideation and foundational building, but if this problem space resonates with you, feel free to explore the repo.
+
 ## License
 
 MIT
