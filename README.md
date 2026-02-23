@@ -18,7 +18,7 @@ make build
 ./bin/vecna
 ```
 
-  `make install` also copies `config.example.yaml` to `~/.config/vecna/config.yaml` if that file doesn’t exist (so Run command has default commands).
+  `make install` installs `config.example.yaml` to `~/.config/vecna/config.yaml` if that file doesn’t exist (so Run command has default commands).
 
 ## Usage
 

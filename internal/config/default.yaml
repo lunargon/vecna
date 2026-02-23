@@ -1,0 +1,8 @@
+# Default config used when ~/.config/vecna/config.yaml does not exist.
+hosts: []
+
+commands:
+  - label: disk usage
+    command: df -h
+  - label: memory
+    command: free -m

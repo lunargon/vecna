@@ -1,11 +1,16 @@
 package config
 
 import (
+	"bytes"
+	_ "embed"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/viper"
 )
+
+//go:embed default.yaml
+var defaultYAML []byte
 
 type Config struct {
 	Hosts    []Host    `mapstructure:"hosts"`
@@ -52,11 +57,48 @@ func Init(cfgFile string) {
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			viper.Unmarshal(&C)
+			applyDefaultCommandsIfEmpty()
+			return
+		}
+		// No config file: use embedded default and write it so it exists for editing
+		if cfgFile == "" {
+			if rerr := viper.ReadConfig(bytes.NewReader(defaultYAML)); rerr == nil {
+				viper.Unmarshal(&C)
+				home, _ := os.UserHomeDir()
+				configPath := filepath.Join(home, ".config", "vecna", "config.yaml")
+				if err := viper.WriteConfigAs(configPath); err == nil {
+					viper.SetConfigFile(configPath)
+				}
+			}
+			applyDefaultCommandsIfEmpty()
 			return
 		}
 	}
 
 	viper.Unmarshal(&C)
+	applyDefaultCommandsIfEmpty()
+}
+
+// applyDefaultCommandsIfEmpty fills C.Commands from embedded default when none are set, and persists.
+func applyDefaultCommandsIfEmpty() {
+	if len(C.Commands) > 0 {
+		return
+	}
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(bytes.NewReader(defaultYAML)); err != nil {
+		return
+	}
+	var def struct {
+		Commands []Command `mapstructure:"commands"`
+	}
+	if err := v.Unmarshal(&def); err != nil || len(def.Commands) == 0 {
+		return
+	}
+	C.Commands = def.Commands
+	viper.Set("commands", def.Commands)
+	_ = Save()
 }
 
 func Save() error {
