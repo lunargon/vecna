@@ -4,6 +4,10 @@
 
 <p align="center">Minimalistic SSH TUI.</p>
 
+| | |
+|:---:|:---:|
+| <img src="assets/screenshot-1.png" alt="Screenshot 1" width="400"/> | <img src="assets/screenshot-2.png" alt="Screenshot 2" width="400"/> |
+
 ## Install
 
 ```bash
