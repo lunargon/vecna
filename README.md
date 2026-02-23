@@ -1,12 +1,17 @@
 <p align="center">
-  <img src="assets/vecna.jpg" alt="Vecna" width="120" />
+  <img src="assets/vecna.jpg" alt="Vecna" width="400" />
 </p>
 
-<p align="center">Minimalistic SSH TUI.</p>
+<h2 align="center">Minimalistic TUI for SSH mgmt</h2>
+
+<br>
+<br>
+<br>
 
 | | |
 |:---:|:---:|
-| <img src="assets/screenshot-1.png" alt="Screenshot 1" width="400"/> | <img src="assets/screenshot-2.png" alt="Screenshot 2" width="400"/> |
+| <img src="assets/screenshot-1.png" alt="Screenshot 1" width="600"/> | <img src="assets/screenshot-2.png" alt="Screenshot 2" width="600"/> |
+
 
 ## Install
 
