@@ -2,6 +2,7 @@ name: Release
 
 on:
   push:
+    branches: [main, master]
     tags: ['v*']
 
 permissions:
@@ -30,7 +31,21 @@ jobs:
 
       - name: Set version
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+            echo "TAG=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            V="0.0.0-${GITHUB_SHA::7}"
+            echo "VERSION=$V" >> $GITHUB_OUTPUT
+            echo "TAG=v$V" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Test
+        run: go test -v ./...
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Build
         run: |
@@ -54,7 +69,15 @@ jobs:
 
       - name: Get version
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+            echo "TAG=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            V="0.0.0-${GITHUB_SHA::7}"
+            echo "VERSION=$V" >> $GITHUB_OUTPUT
+            echo "TAG=v$V" >> $GITHUB_OUTPUT
+          fi
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -70,7 +93,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.version.outputs.TAG }}
           name: v${{ steps.version.outputs.VERSION }}
           generate_release_notes: true
           make_latest: true

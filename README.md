@@ -18,7 +18,7 @@ make build
 ./bin/vecna
 ```
 
-  `make install` installs `config.example.yaml` to `~/.config/vecna/config.yaml` if that file doesn’t exist (so Run command has default commands).
+  `make install` installs the binary; config is created on first run with default run commands.
 
 ## Usage
 
@@ -31,16 +31,7 @@ vecna version  # Print version
 
 **Path:** `~/.config/vecna/config.yaml`
 
-An example config is included in the repo. Copy it and edit (or run `make install`, which does this for you if no config exists yet):
-
-```bash
-mkdir -p ~/.config/vecna
-cp config.example.yaml ~/.config/vecna/config.yaml
-```
-
-If **Run command** (r) shows “No saved commands”, add a `commands` block to your config (see example below) or replace your config with the example.
-
-Example contents:
+Created on first run with default run commands. Edit to add hosts and more commands. Example:
 
 ```yaml
 hosts:
