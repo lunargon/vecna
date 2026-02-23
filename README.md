@@ -1,14 +1,17 @@
-# Vecna
+<p align="center">
+  <img src="assets/vecna.jpg" alt="Vecna" width="120" />
+</p>
 
-Simplify ssh-ing with minimalistic TUI.
+<p align="center">Minimalistic SSH TUI.</p>
 
 ## Install
 
 ```bash
-go install github.com/shravan20/vecna@latest
+curl -sSL https://raw.githubusercontent.com/shravan20/vecna/master/scripts/install.sh | sh
 ```
 
-Or build from source:
+- **Go:** `go install github.com/shravan20/vecna@latest`
+- **From source:**
 
 ```bash
 make build
@@ -24,7 +27,7 @@ vecna version  # Print version
 
 ## Config
 
-Config lives at `~/.config/vecna/config.yaml`
+**Path:** `~/.config/vecna/config.yaml`
 
 ```yaml
 hosts:
@@ -43,27 +46,11 @@ commands:                  # optional: saved commands for "Run command" (r)
     command: "free -m"
 ```
 
-## Keybindings
+---
 
-| Key | Action |
-|-----|--------|
-| `q` | Quit |
-| `1`–`9` | Switch to tab (1=Hosts, 2–9=SSH tabs) |
-| `ctrl+←` / `ctrl+→` | Previous / next tab |
-| `/` | Filter hosts by name or tag |
-| `↑/k` | Up |
-| `↓/j` | Down |
-| `⏎` | Select / Connect (opens new SSH tab) |
-| `esc` | Back / close SSH tab |
-| `?` | Help |
-| `a` | Add host |
-| `d` | Delete host |
-| `e` | Edit host |
-| `c` | Connect (SSH in new TUI tab) |
-| `f` | Open SFTP in new terminal |
-| `p` | Port forward |
-| `r` | Run saved command |
-| `t` | File transfer (scp push/pull) |
+## Contributing
+
+Issues and PRs welcome. Tag releases with semver (`v1.0.0`); CI builds and publishes.
 
 ## License
 
