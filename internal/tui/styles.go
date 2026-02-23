@@ -103,11 +103,15 @@ var (
 			MarginTop(1)
 
 	styleToastSuccess = lipgloss.NewStyle().
-				Background(colorGreen).
-				Foreground(lipgloss.Color("#1a1b26")).
-				Bold(true).
-				Padding(0, 2).
-				MarginTop(1)
+			Background(colorGreen).
+			Foreground(lipgloss.Color("#1a1b26")).
+			Bold(true).
+			Padding(0, 2).
+			MarginTop(1)
+
+	stylePurple = lipgloss.NewStyle().
+			Foreground(colorPurple).
+			Bold(true)
 )
 
 func keyHint(k, desc string) string {

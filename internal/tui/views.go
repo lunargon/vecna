@@ -9,7 +9,7 @@ import (
 
 func (m Model) viewHome() string {
 	if m.width == 0 {
-		return "Loading..."
+		return renderLoader(40, 12, m.animFrame, "Loading...")
 	}
 
 	logo := styleLogo.Render("◈ VECNA")
@@ -163,7 +163,7 @@ func (m Model) renderStatusBar() string {
 
 func (m Model) viewAddHost() string {
 	if m.width == 0 {
-		return "Loading..."
+		return renderLoader(40, 12, m.animFrame, "Loading...")
 	}
 
 	logo := styleLogo.Render("◈ VECNA")
@@ -220,69 +220,43 @@ func (m Model) viewAddHost() string {
 
 func (m Model) viewSSH() string {
 	if m.width == 0 {
-		return "Loading..."
+		return renderLoader(40, 12, m.animFrame, "Starting up...")
 	}
 
-	var header string
-	if m.sshHost != nil {
-		logo := styleLogo.Render("◈ VECNA")
-		connInfo := styleDim.Render(fmt.Sprintf(" / %s@%s", m.sshHost.User, m.sshHost.Hostname))
-		header = styleHeader.Render(logo + connInfo)
-	} else {
-		header = styleHeader.Render(styleLogo.Render("◈ VECNA"))
-	}
+	if m.connecting {
+		terminalHeight := m.height - 4
+		if terminalHeight < 5 {
+			terminalHeight = 5
+		}
 
-	var content string
-	if m.connecting || len(m.sshLog) > 0 {
-		var lines []string
-		for _, log := range m.sshLog {
-			lines = append(lines, log)
-		}
-		if m.connecting {
-			lines = append(lines, styleDim.Render("→ Connecting..."))
-		}
-		logContent := strings.Join(lines, "\n")
-		
-		output := m.sshOutput.String()
-		if output != "" {
-			logContent += "\n\n" + styleDim.Render("─ Terminal Output ─") + "\n" + output
-		}
-		content = logContent
-	} else if m.err != nil {
-		content = styleError.Render(fmt.Sprintf("Error: %v", m.err))
-	} else {
-		output := m.sshOutput.String()
-		if output == "" {
-			content = styleDim.Render("Connected. Waiting for output...")
+		var msg string
+		if m.sshHost != nil {
+			msg = fmt.Sprintf("Connecting to %s@%s ...", m.sshHost.User, m.sshHost.Hostname)
 		} else {
-			content = output
+			msg = "Connecting..."
 		}
+
+		loader := renderLoaderFullscreen(m.width, m.height, m.animFrame, terminalHeight, msg)
+		statusBar := styleStatusBar.Render(keyHint("ctrl+]", "cancel"))
+
+		mainView := lipgloss.JoinVertical(
+			lipgloss.Left,
+			loader,
+			"",
+			statusBar,
+		)
+		return m.renderWithToast(mainView)
 	}
 
-	terminalHeight := m.height - 4
-	if terminalHeight < 5 {
-		terminalHeight = 5
+	// Full-screen terminal: render VT buffer directly
+	if m.sshVT != nil {
+		m.sshVT.Lock()
+		screen := m.sshVT.String()
+		m.sshVT.Unlock()
+		return screen
 	}
 
-	terminalWidth := m.width - 4
-
-	terminal := stylePanel.
-		Width(terminalWidth).
-		Height(terminalHeight).
-		Render(content)
-
-	statusBar := styleStatusBar.Render(keyHint("esc", "disconnect") + "  " + keyHint("q", "quit"))
-
-	mainView := lipgloss.JoinVertical(
-		lipgloss.Left,
-		header,
-		"",
-		terminal,
-		"",
-		statusBar,
-	)
-
-	return m.renderWithToast(mainView)
+	return styleDim.Render("No active session")
 }
 
 func (m Model) renderWithToast(content string) string {

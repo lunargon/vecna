@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/hinshun/vt10x"
 	"github.com/shravan20/vecna/internal/config"
 	"github.com/shravan20/vecna/internal/ssh"
 )
@@ -32,14 +33,14 @@ type Model struct {
 	inputFocus   int
 	err          error
 	sshSession   *ssh.Session
-	sshOutput    strings.Builder
+	sshVT        vt10x.Terminal
 	sshHost      *config.Host
 	connecting   bool
 	toast        string
 	toastTimer   int
 	toastSuccess bool
-	sshLog       []string
 	showPassword bool
+	animFrame    int
 }
 
 func New() Model {
@@ -77,10 +78,11 @@ func (m *Model) initAddHostInputs() {
 }
 
 func (m Model) Init() tea.Cmd {
+	animTick := tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return animTickMsg{} })
 	if m.connecting && m.sshHost != nil {
-		return m.connectSSH()
+		return tea.Batch(m.connectSSH(), animTick)
 	}
-	return nil
+	return animTick
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -96,8 +98,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case sshOutputMsg:
-		if string(msg) != "" {
-			m.sshOutput.WriteString(string(msg))
+		if len(msg) > 0 && m.sshVT != nil {
+			m.sshVT.Write([]byte(msg))
 		}
 		if m.sshSession != nil {
 			return m, m.readSSHOutput()
@@ -106,7 +108,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sshErrorMsg:
 		errorMsg := string(msg)
-		m.sshLog = append(m.sshLog, fmt.Sprintf("✕ Error: %s", errorMsg))
 		m.toast = errorMsg
 		m.toastSuccess = false
 		m.toastTimer = 50
@@ -116,22 +117,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sshSession.Close()
 			m.sshSession = nil
 		}
+		m.sshVT = nil
 		return m, tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 
 	case sshConnectedMsg:
 		m.connecting = false
 		m.sshSession = msg.session
-		m.sshLog = append(m.sshLog, "✓ Connected")
+		cols, rows := m.width, m.height-2
+		if cols < 80 {
+			cols = 80
+		}
+		if rows < 24 {
+			rows = 24
+		}
+		m.sshVT = vt10x.New(vt10x.WithSize(cols, rows))
 		if m.width > 0 && m.height > 0 {
-			m.sshSession.Resize(m.width, m.height-2)
+			m.sshSession.Resize(cols, rows)
 		}
 		return m, m.readSSHOutput()
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		termCols, termRows := msg.Width, msg.Height-2
 		if m.sshSession != nil {
-			m.sshSession.Resize(msg.Width, msg.Height-2)
+			m.sshSession.Resize(termCols, termRows)
+		}
+		if m.sshVT != nil {
+			m.sshVT.Resize(termCols, termRows)
 		}
 
 	case tea.MouseMsg:
@@ -146,6 +159,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				return m, tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 			}
+		}
+
+	case animTickMsg:
+		needsAnim := m.connecting || m.width == 0
+		if needsAnim {
+			m.animFrame++
+			return m, tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return animTickMsg{} })
 		}
 	}
 
@@ -186,10 +206,13 @@ func (m Model) updateHome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h := m.hosts[m.cursor]
 			m.sshHost = &h
 			m.connecting = true
+			m.animFrame = 0
 			m.view = ViewSSH
-			m.sshOutput.Reset()
-			m.sshLog = []string{"→ Connecting..."}
-			return m, m.connectSSH()
+			m.sshVT = nil
+			return m, tea.Batch(
+				m.connectSSH(),
+				tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return animTickMsg{} }),
+			)
 		}
 	}
 
@@ -414,6 +437,7 @@ type sshConnectedMsg struct {
 	session *ssh.Session
 }
 type tickMsg struct{}
+type animTickMsg struct{}
 
 
 func (m Model) connectSSH() tea.Cmd {
@@ -445,12 +469,26 @@ func (m Model) connectSSH() tea.Cmd {
 		}
 
 		skipKey := !host.KeyDeployed && host.IdentityFile != ""
-		session, err := ssh.Connect(h, password, skipKey)
-		if err != nil {
-			return sshErrorMsg(err.Error())
-		}
 
-		return sshConnectedMsg{session: session}
+		type connResult struct {
+			session *ssh.Session
+			err     error
+		}
+		ch := make(chan connResult, 1)
+		go func() {
+			session, err := ssh.Connect(h, password, skipKey)
+			ch <- connResult{session, err}
+		}()
+
+		select {
+		case res := <-ch:
+			if res.err != nil {
+				return sshErrorMsg(res.err.Error())
+			}
+			return sshConnectedMsg{session: res.session}
+		case <-time.After(15 * time.Second):
+			return sshErrorMsg("connection timed out (15s)")
+		}
 	}
 }
 
@@ -478,64 +516,120 @@ func (m Model) readSSHOutput() tea.Cmd {
 }
 
 func (m Model) updateSSH(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.keys.Back):
+	// Ctrl+] is the only way to disconnect (standard SSH escape)
+	if msg.String() == "ctrl+]" {
 		if m.sshSession != nil {
 			m.sshSession.Close()
 			m.sshSession = nil
 		}
+		m.connecting = false
 		m.view = ViewHome
 		m.sshHost = nil
-		m.sshOutput.Reset()
-		m.sshLog = nil
+		m.sshVT = nil
 		return m, nil
-
-	case key.Matches(msg, m.keys.Quit):
-		if m.sshSession != nil {
-			m.sshSession.Close()
-			m.sshSession = nil
-		}
-		return m, tea.Quit
 	}
 
-	if m.sshSession != nil {
-		var data []byte
-		if msg.Type == tea.KeyRunes {
-			data = []byte(msg.String())
-		} else {
-			switch msg.String() {
-			case "enter":
-				data = []byte("\r")
-			case "backspace":
-				data = []byte("\x7f")
-			case "tab":
-				data = []byte("\t")
-			case "space":
-				data = []byte(" ")
-			case "up":
-				data = []byte("\x1b[A")
-			case "down":
-				data = []byte("\x1b[B")
-			case "right":
-				data = []byte("\x1b[C")
-			case "left":
-				data = []byte("\x1b[D")
+	if m.sshSession == nil {
+		return m, nil
+	}
+
+	var data []byte
+	if msg.Type == tea.KeyRunes {
+		data = []byte(msg.String())
+	} else {
+		switch msg.Type {
+		case tea.KeyEnter:
+			data = []byte("\r")
+		case tea.KeyBackspace:
+			data = []byte("\x7f")
+		case tea.KeyTab:
+			data = []byte("\t")
+		case tea.KeySpace:
+			data = []byte(" ")
+		case tea.KeyUp:
+			data = []byte("\x1b[A")
+		case tea.KeyDown:
+			data = []byte("\x1b[B")
+		case tea.KeyRight:
+			data = []byte("\x1b[C")
+		case tea.KeyLeft:
+			data = []byte("\x1b[D")
+		case tea.KeyEscape:
+			data = []byte("\x1b")
+		case tea.KeyDelete:
+			data = []byte("\x1b[3~")
+		case tea.KeyHome:
+			data = []byte("\x1b[H")
+		case tea.KeyEnd:
+			data = []byte("\x1b[F")
+		case tea.KeyPgUp:
+			data = []byte("\x1b[5~")
+		case tea.KeyPgDown:
+			data = []byte("\x1b[6~")
+		case tea.KeyInsert:
+			data = []byte("\x1b[2~")
+		case tea.KeyF1:
+			data = []byte("\x1bOP")
+		case tea.KeyF2:
+			data = []byte("\x1bOQ")
+		case tea.KeyF3:
+			data = []byte("\x1bOR")
+		case tea.KeyF4:
+			data = []byte("\x1bOS")
+		case tea.KeyF5:
+			data = []byte("\x1b[15~")
+		case tea.KeyF6:
+			data = []byte("\x1b[17~")
+		case tea.KeyF7:
+			data = []byte("\x1b[18~")
+		case tea.KeyF8:
+			data = []byte("\x1b[19~")
+		case tea.KeyF9:
+			data = []byte("\x1b[20~")
+		case tea.KeyF10:
+			data = []byte("\x1b[21~")
+		case tea.KeyF11:
+			data = []byte("\x1b[23~")
+		case tea.KeyF12:
+			data = []byte("\x1b[24~")
+		default:
+			s := msg.String()
+			switch s {
 			case "ctrl+c":
 				data = []byte("\x03")
 			case "ctrl+d":
 				data = []byte("\x04")
-			case "esc":
-				data = []byte("\x1b")
+			case "ctrl+z":
+				data = []byte("\x1a")
+			case "ctrl+l":
+				data = []byte("\x0c")
+			case "ctrl+a":
+				data = []byte("\x01")
+			case "ctrl+e":
+				data = []byte("\x05")
+			case "ctrl+k":
+				data = []byte("\x0b")
+			case "ctrl+u":
+				data = []byte("\x15")
+			case "ctrl+w":
+				data = []byte("\x17")
+			case "ctrl+r":
+				data = []byte("\x12")
+			case "ctrl+p":
+				data = []byte("\x10")
+			case "ctrl+n":
+				data = []byte("\x0e")
 			default:
-				data = []byte(msg.String())
+				if len(s) == 1 {
+					data = []byte(s)
+				}
 			}
-		}
-		if len(data) > 0 {
-			m.sshSession.Write(data)
-			return m, m.readSSHOutput()
 		}
 	}
 
+	if len(data) > 0 {
+		m.sshSession.Write(data)
+	}
 	return m, m.readSSHOutput()
 }
 
