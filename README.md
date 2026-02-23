@@ -1,3 +1,5 @@
+<samp>
+
 <p align="center">
   <img src="assets/vecna.jpg" alt="Vecna" width="400" />
 </p>
@@ -78,12 +80,13 @@ So instead of memorizing commands, why not solve it to that reduce cognitive loa
 
 That led to Vecna (yes, Stranger Things reference, lol yep xD).
 
-Idea: centralize control, reduce friction, make SSH-driven workflows better and more structured.
-
-It is still in a very early stage, mostly ideation and foundational building, but if this problem space resonates with you, feel free to explore the repo.
+_**Note: So the idea is centralize control, reduce friction, make SSH-driven workflows better and more structured. It is still in a very early stage, mostly ideation and foundational building, but if this problem space resonates with you, feel free to explore the repo.**_
 
 </details>
 
 ## License
 
 MIT
+
+
+<samp>
