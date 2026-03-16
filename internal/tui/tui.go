@@ -32,6 +32,7 @@ const (
 	ViewRunCommand
 	ViewFileTransfer
 	ViewImportSSH
+	ViewDeleteConfirm
 	ViewVersion
 )
 
@@ -70,6 +71,10 @@ type Model struct {
 	showPassword bool
 	animFrame    int
 	editingHostIndex int
+
+	// Delete host confirmation
+	pendingDeleteConfigIndex int  // config index of host to delete; -1 when not pending
+	pendingDeleteHostName    string
 
 	// Tabs: tab 0 is always Hosts; rest are SSH sessions
 	tabs            []tab
@@ -418,6 +423,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateFileTransfer(msg)
 		case ViewImportSSH:
 			return m.updateImportSSH(msg)
+		case ViewDeleteConfirm:
+			return m.updateDeleteConfirm(msg)
 		case ViewVersion:
 			return m.updateVersion(msg)
 		}
@@ -765,12 +772,10 @@ func (m Model) updateHome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Delete):
 		if len(entries) > 0 && m.cursor < len(entries) {
-			realIndex := entries[m.cursor].Index
-			config.RemoveHost(realIndex)
-			m.hosts = config.GetHosts()
-			if m.cursor >= len(entries)-1 && m.cursor > 0 {
-				m.cursor--
-			}
+			e := entries[m.cursor]
+			m.pendingDeleteConfigIndex = e.Index
+			m.pendingDeleteHostName = e.Host.Name
+			m.view = ViewDeleteConfirm
 			return m, nil
 		}
 
@@ -1025,6 +1030,36 @@ func (m Model) updateImportSSH(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	return m, nil
+}
+
+func (m Model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.pendingDeleteConfigIndex < 0 {
+		m.view = ViewHome
+		m.pendingDeleteHostName = ""
+		return m, nil
+	}
+	switch msg.String() {
+	case "y", "Y", "enter":
+		config.RemoveHost(m.pendingDeleteConfigIndex)
+		m.hosts = config.GetHosts()
+		entries := m.filteredHostEntries()
+		if m.cursor >= len(entries) && m.cursor > 0 {
+			m.cursor--
+		}
+		m.toast = fmt.Sprintf("Host '%s' removed", m.pendingDeleteHostName)
+		m.toastSuccess = true
+		m.toastTimer = 30
+		m.pendingDeleteConfigIndex = -1
+		m.pendingDeleteHostName = ""
+		m.view = ViewHome
+		return m, nil
+	case "n", "N", "esc":
+		m.pendingDeleteConfigIndex = -1
+		m.pendingDeleteHostName = ""
+		m.view = ViewHome
+		return m, nil
+	}
 	return m, nil
 }
 
@@ -1924,6 +1959,8 @@ func (m Model) View() string {
 		body = m.viewFileTransfer()
 	case ViewImportSSH:
 		body = m.viewImportSSH()
+	case ViewDeleteConfirm:
+		body = m.viewDeleteConfirm()
 	case ViewVersion:
 		body = m.viewVersion()
 	default:

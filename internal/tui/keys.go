@@ -56,7 +56,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		Delete: key.NewBinding(
 			key.WithKeys("d"),
-			key.WithHelp("d", "delete"),
+			key.WithHelp("d", "delete host"),
 		),
 		Edit: key.NewBinding(
 			key.WithKeys("e"),
